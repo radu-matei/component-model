@@ -352,7 +352,6 @@ Starting with interface types, the set of values allowed for the *fundamental*
 interface types is given by the following table:
 | Type                      | Values |
 | ------------------------- | ------ |
-| `unit`                    | just one [uninteresting value] |
 | `bool`                    | `true` and `false` |
 | `s8`, `s16`, `s32`, `s64` | integers in the range [-2<sup>N-1</sup>, 2<sup>N-1</sup>-1] |
 | `u8`, `u16`, `u32`, `u64` | integers in the range [0, 2<sup>N</sup>-1] |
@@ -365,13 +364,14 @@ interface types is given by the following table:
 The sets of values allowed for the remaining *specialized* interface types are
 defined by the following mapping:
 ```
-                            string ↦ (list char)
               (tuple <intertype>*) ↦ (record (field "𝒊" <intertype>)*) for 𝒊=0,1,...
                    (flags <name>*) ↦ (record (field <name> bool)*)
+                              unit ↦ (record)
                     (enum <name>*) ↦ (variant (case <name> unit)*)
               (option <intertype>) ↦ (variant (case "none") (case "some" <intertype>))
               (union <intertype>*) ↦ (variant (case "𝒊" <intertype>)*) for 𝒊=0,1,...
 (expected <intertype> <intertype>) ↦ (variant (case "ok" <intertype>) (case "error" <intertype>))
+                            string ↦ (list char)
 ```
 Building on these interface types, there are four kinds of types describing the
 four kinds of importable/exportable component definitions. (In the future, a
@@ -449,6 +449,8 @@ Note that the inline use of `$G` and `$U` are inline `outer` aliases.
 
 ### Function Definitions
 
+TODO: update this
+
 To implement or call functions of type [`functype`](#type-definitions), we need
 to be able to call across a shared-nothing boundary. Traditionally, this
 problem is solved by defining a serialization format for copying data across
@@ -495,11 +497,13 @@ the given `instanceidx` is a module instance exporting the following fields:
 ```
 (export "memory" (memory 1))
 (export "realloc" (func (param i32 i32 i32 i32) (result i32)))
-(export "free" (func (param i32 i32 i32)))
+(export "post-return" (func))
 ```
 The 4 parameters of `realloc` are: original allocation (or `0` for none), original
-size (or `0` if none), alignment and new desired size. The 3 parameters of `free`
-are the pointer, size and alignment.
+size (or `0` if none), alignment and new desired size.
+
+TODO: describe `post-return`, link to `CanonicalABI.md`.
+TODO: update examples below for `post-return`.
 
 With this, we can finally write a non-trivial component that takes a string,
 does some logging, then returns a string.
@@ -654,6 +658,8 @@ note that all definitions are acyclic as is the resulting instance graph.
 
 
 ## Component Invariants
+
+TODO: add links to CanonicalABI.md
 
 As a consequence of the shared-nothing design described above, all calls into
 or out of a component instance necessarily transit through a component function

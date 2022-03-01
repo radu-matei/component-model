@@ -1,67 +1,101 @@
-# Canonical ABI Explainer
+# Boilerplate
 
-This explainer walks through the Canonical ABI used by 
-[`canon.lift` and `canon.lower`](Explainer.md#function-definitions) to convert
-between high-level abstract interface values and low-level Core WebAssembly
-values and linear memory.
+import math
+import struct
+import types
+from dataclasses import dataclass
 
-Contents:
-* [Supporting definitions](#supporting-definitions)
-  * [Despecialization](#Despecialization)
-  * [Alignment](#alignment)
-  * [Size](#size)
-  * [Loading](#loading)
-  * [Storing](#storing)
-  * [Flattening](#flattening)
-  * [Lifting](#lifting)
-  * [Lowering](#lowering)
-  * [Calling into a component](#calling-into-a-component)
-  * [Calling out of a component](#calling-out-of-a-component)
-* [Canonical ABI built-ins](#canonical-abi-built-ins)
-  * [`canon.lift`](#canonlift)
-  * [`canon.lower`](#canonlower)
+class Trap(BaseException):
+  pass
 
+def trap():
+  raise Trap()
 
-## Supporting definitions
+def trap_if(cond):
+  if cond:
+    raise Trap()
 
-The Canonical ABI specifies, for each interface-typed function signature, a
-corresponding Core WebAssembly function signature and the process for reading
-interface-typed values into and out of linear memory. While a full formal
-specification would specify the Canonical ABI in terms of macro-expansion into
-Core WebAssembly instructions augmented with new spec-internal
-[administrative instructions] for producing and consuming interface-typed
-values, the informal presentation here instead specifies the process in terms
-of Python code that would be logically executed at validation and runtime by
-a component model implementation. The Python code is presented by interleaving
-definitions with descriptions and eliding some boilerplate. For a complete
-listing of all Python definitions in a single executable file with a small unit
-test suite, see the [`canonical-abi`](canonical-abi/) directory.
+def assert_unreachable(v):
+  print("Unreachable ({})".format(v))
+  assert(False)
 
-The convention followed by the Python code below is that all traps are raised
-by explicit `trap()`/`trap_if()` calls; Python `assert()` statements should
-never fire and are only included as hints to the reader. Similarly, there
-should be no uncaught Python exceptions.
+def to_python_encoding(encoding):
+  match encoding:
+    case 'utf8'   : return 'utf-8'
+    case 'utf16'  : return 'utf-16-le'
+    case 'latin1' : return 'latin-1'
+    case _        : assert_unreachable(encoding)
 
-Lastly, while the Python code appears to perform a copy as part of lifting
-the contents of linear memory into high-level Python values, a normal
-implementation should *never* need to make this extra intermediate copy.
-Instead, by design of the component model, caller and callee pairs are known at
-compile-time and interleaved side effects are prevented in order to ensure that
-it's always possible to copy directly from a source host or linear memory into
-destination host or linear memory. This claim is expanded upon in the
-[`canon.lower`](#canonlower) section below.
+class Unit: pass
+class Bool: pass
+class S8: pass
+class U8: pass
+class S16: pass
+class U16: pass
+class S32: pass
+class U32: pass
+class S64: pass
+class U64: pass
+class Float32: pass
+class Float64: pass
+class Char: pass
+class String: pass
 
+@dataclass
+class List:
+  t: any
 
-### Despecialization
+@dataclass
+class Field:
+  label: str
+  t: any
 
-In the [explainer](Explainder.md#type-definitions), interface types are grouped
-into *fundamental* and *specialized* interface types, with the abstract meaning
-of the specialized types being defined by expansion into fundamental types. In
-most cases, the canonical ABI of a specialized type is the same as the
-canonical ABI of its expanded fundamental type, so, to avoid repetition, we use
-the `despecialize` function to perform the expansion before pattern matching:
+@dataclass
+class Record:
+  fields: [Field]
 
-```python
+@dataclass
+class Tuple:
+  ts: [any]
+
+@dataclass
+class Flags:
+  labels: [str]
+
+@dataclass
+class Case:
+  label: str
+  t: any
+  defaults_to: str = None
+
+@dataclass
+class Variant:
+  cases: [Case]
+
+@dataclass
+class Enum:
+  labels: [str]
+
+@dataclass
+class Union:
+  ts: [any]
+
+@dataclass
+class Option:
+  t: any
+
+@dataclass
+class Expected:
+  ok: any
+  error: any
+
+@dataclass
+class Func:
+  params: [any]
+  result: any
+
+# Despecialization
+
 def despecialize(t):
   match t:
     case Tuple(ts)           : return Record([ Field(str(i), t) for i,t in enumerate(ts) ])
@@ -71,19 +105,9 @@ def despecialize(t):
     case Option(t)           : return Variant([ Case("none", Unit()), Case("some", t) ])
     case Expected(ok, error) : return Variant([ Case("ok", ok), Case("error", error) ])
     case _                   : return t
-```
-The specialized interface types `string` and `flags` are missing from this list
-because they are given specialized canonical ABI representations distinct from
-their `(list char)` and `(record (field <name> bool)*)` expansions, resp.
 
+# Alignment
 
-### Alignment
-
-Each interface type is assigned an [alignment] which is used to by subsequent
-Canonical ABI definitions to compute the type's size in memory and the layout
-of its contained fields. Presenting the complete functions in chunks, we start
-with the top-level case analysis:
-```python
 def alignment(t):
   match despecialize(t):
     case Bool()             : return 1
@@ -108,13 +132,9 @@ def max_alignment(ts):
 
 def types_of(fields_or_cases):
   return [x.t for x in fields_or_cases]
-```
-The `types_of` helper function ignores the names of the record/variant
-fields/cases, extracting just the type field (`t`).
 
-As an optimization, `variant` discriminants are represented by the smallest integer
-covering the number of cases in the variant: 
-```python
+#
+
 def discriminant_type(cases):
   n = len(cases)
   assert(0 < n < (1 << 32))
@@ -124,32 +144,17 @@ def discriminant_type(cases):
     case 2: return U16()
     case 3: return U32()
     case _: return assert_unreachable(n)
-```
-Depending on the payload type, this can allow more compact representations of
-variants in memory.
 
-As an optimization, `flags` are represented as packed bit-vectors. Like variant
-discriminants, `flags` use the smallest integer that fits all the bits, falling
-back to sequences of `i32`s when there are more than 32 bits.
-```python
+#
+
 def alignment_flags(labels):
   n = len(labels)
   if n <= 8: return 1
   if n <= 16: return 2
   return 4
-```
 
+# Size
 
-### Size
-
-Each interface is assigned two slightly-different measures of "size":
-* its "byte size", which is the smallest number of bytes covering all its
-  fields when stored in linear memory; and
-* its "element size", which is the size of the type when stored as an element
-  of a list, which requires rounding up to ensure the alignment of the next
-  element.
-
-```python
 def elem_size(t):
   return align_to(byte_size(t), alignment(t))
 
@@ -192,18 +197,9 @@ def byte_size_flags(labels):
   if n <= 8: return 1
   if n <= 16: return 2
   return 4 * math.ceil(n / 32)
-```
 
+# Loading
 
-### Loading
-
-The `load` function defines how to read a given interface type `t` out of
-linear memory starting at offset `ptr`, returning a interface-typed value
-represented as a Python value. The `Opts`/`opts` class/parameter contains the
-[`canonopt`](Explainer.md#function-definitions) immediates supplied to
-`canon.lift`. Taking the definition in pieces, we start with the top-level
-pattern match:
-```python
 class Opts:
   memory: bytearray
   string_encoding: str
@@ -231,19 +227,15 @@ def load(opts, ptr, t):
     case Variant(cases) : return load_variant(opts, ptr, cases)
     case Flags(labels)  : return load_flags(opts, ptr, labels)
     case _              : assert_unreachable(t)
-```
 
-Integers are loaded directly from memory, with their high-order bit interpreted
-according to the signedness of the type:
-```python
+#
+
 def load_int(opts, ptr, nbytes, signed = False):
   trap_if(ptr + nbytes > len(opts.memory))
   return int.from_bytes(opts.memory[ptr : ptr + nbytes], 'little', signed=signed)
-```
 
-Floats are loaded from memory and then "canonicalized", collapsing all NaN
-values into a single canonical NaN value:
-```python
+#
+
 def reinterpret_i32_as_float(i):
   return struct.unpack('!f', struct.pack('!I', i))[0]
 
@@ -254,9 +246,9 @@ def canonicalize(f):
   if math.isnan(f):
     return reinterpret_i64_as_float(0x7ff8000000000000)
   return f
-```
 
-```python
+#
+
 def i32_to_char(opts, i):
   trap_if(i >= 0x110000)
   trap_if(0xD800 <= i <= 0xDFFF)
@@ -341,14 +333,9 @@ def load_flags_from_bigint(i, labels):
     i >>= 1
   trap_if(i)
   return record
-```
 
-### Storing
+# Storing
 
-TODO:
-* Why string is nuts
-
-```python
 def store(opts, v, t, ptr):
   assert(ptr == align_to(ptr, alignment(t)))
   match despecialize(t):
@@ -530,14 +517,9 @@ def concat_flags_into_bigint(v, labels):
     i |= (int(bool(v[l])) << shift)
     shift += 1
   return i
-```
 
-### Flattening
+# Flattening
 
-TODO:
-* how this is just a best-effort optimization to avoid heap in common cases
-
-```python
 def flatten(t):
   match despecialize(t):
     case Bool()               : return ['i32']
@@ -576,14 +558,9 @@ def flatten_flags(labels):
 
 def num_flattened_i32s(labels):
   return math.ceil(len(labels) / 32)
-```
 
-### Lifting
+# Lifting
 
-TODO:
-* assume: `i32` value is Python `int` in range [0,2<sup>32</sup>)
-
-```python
 @dataclass
 class Value:
   t: any
@@ -683,14 +660,9 @@ def lift_flags(vi, labels):
     i |= (vi.next('i32') << shift)
     shift += 32
   return load_flags_from_bigint(i, labels)
-```
 
-### Lowering
+# Lowering
 
-TODO:
-* why `lower_signed` is doing that
-
-```python
 def lower(opts, v, t):
   match despecialize(t):
     case Bool()         : return [Value('i32', int(v))]
@@ -756,13 +728,9 @@ def lower_flags(v, labels):
     i >>= 32
   assert(i == 0)
   return flat
-```
 
-### Calling into a component
+# Calling into a component
 
-TODO:
-
-```python
 MAX_PARAMS = 16
 MAX_RESULTS = 1 # only until we can use multi-value
 
@@ -804,16 +772,9 @@ def call_in(opts, callee, functype, args):
     opts.post_return()
 
   return (result, post_return)
-```
 
-### Calling out of a component
+# Calling out of a component
 
-TODO:
-* non-reentrance = one-shot value semantics
-* why `may_enter` is cleared in `post-return`
-* why `MAX_PARAMS`/`MAX_RESULTS` (and multi-value)
-
-```python
 def call_out(opts, caller_instance, callee, functype, flat_args):
   trap_if(not caller_instance.may_leave)
   caller_instance.may_enter = False
@@ -841,57 +802,4 @@ def call_out(opts, caller_instance, callee, functype, flat_args):
 
   caller_instance.may_enter = True
   return flat_results
-```
 
-## Canonical ABI built-ins
-
-Using the above definitions, we can define...
-
-
-### `canon.lift`
-
-For a [function definition](Explainer.md#function-definitions):
-```
-(func $f (canon.lift $ft:<functype> $opts:<canonopt>* $callee:<funcidx>))
-```
-validation specifies:
- * `$callee` must have type `flatten($ft)`
- * `$f` is given type `$ft`
-
-At instantiation time:
-* Define `$f` to be the function: `lambda args: call_in($opts, $callee, $ft, args)`
-
-Thus, `$f` captures `$opts`, `$callee` and `$ft` in a closure which can
-subsequently be exported by the containing component instance.
-
-
-### `canon.lower`
-
-For a [function definition](Explainer.md#function-definitions):
-```
-(func $f (canon.lower $opts:<canonopt>* $callee:<funcidx>))
-```
-where `$callee` has type `$ft`, validation specifies:
-* `$f` is given type `flatten($ft)`
-
-At instantiation time:
-* Let `$inst` be the current instance being instantiated.
-* Define `$f` to be the function: `lambda args: call_out($opts, $inst, $callee, $ft, args)`
-
-Note that:
-* b/c core func types can't be exported, `$f` cannot be exported: it must be
-  called, if at all, by the same component
-* b/c of the `may_enter`/`may_leave` invariants maintained by `call_in`/`call_out`, an attempt
-  to `canon.lower` a same-component `canon.lift` will be guaranteed to trap and so can be statically
-  compiled to `unreachable` when caller and callee are known.
-* non-interleaving means no intermediate copies need to be created
-
-
-
-TODO:
-* should `(list char)` have the same canonical ABI as `string`? This could set the
-  precedent for `(stream char)` to be utf-8 too
-
-
-[Administrative Instructions]: TODO
-[Alignment]: TODO
